@@ -1,9 +1,8 @@
 """
 =============================================================================
-Task 1.2: Detect the Pattern - Red & Blue Ball Detector
+Autonomous Red & Blue Ball Detector (Classical Computer Vision)
 =============================================================================
-Author : MIA Phase 5
-Approach: Classical Computer Vision using OpenCV (no deep learning)
+Method: Classical Computer Vision using OpenCV (no deep learning)
 
 Pipeline:
   1. Preprocessing  - CLAHE on LAB L-channel + Gaussian blur
@@ -348,13 +347,13 @@ def process_image(img_path, label_dir, annot_dir):
 
 def main():
     print("=" * 62)
-    print("   Task 1.2  -  Red & Blue Ball Detector (Classical CV)")
+    print("   Autonomous Red & Blue Ball Detector (Classical CV)")
     print("=" * 62)
 
     if not os.path.isdir(INPUT_DIR):
         raise FileNotFoundError(
             f"Input directory not found: '{INPUT_DIR}'\n"
-            "Please place images in Task5_1.2/balls/")
+            "Please place images in balls/")
 
     for d in [OUTPUT_LABELS, OUTPUT_ANNOT]:
         os.makedirs(d, exist_ok=True)
