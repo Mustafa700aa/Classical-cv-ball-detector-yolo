@@ -28,11 +28,11 @@ An interpretable, training-free, real-time **Classical Computer Vision** pipelin
 | Parameter | Specification / Result |
 |---|---|
 | **Input Dataset** | 20 images (`balls/ball_1.jpg` to `ball_20.jpg`) |
-| **Image Resolutions** | Varied from standard $640 \times 480$ up to $3264 \times 1836$ |
+| **Image Resolutions** | Varied from 640x480 up to 3264x1836 |
 | **Target Classes** | `Class 0: Blue Ball` \| `Class 1: Red Ball` |
-| **Compute Dependency** | 100% Classical OpenCV on CPU (Zero Neural Networks / No GPU) |
+| **Compute Dependency** | 100% Classical OpenCV on CPU — Zero Neural Networks / No GPU |
 | **Output Formats** | YOLO-format `.txt` labels, annotated `.jpg` visual boxes, zipped submission |
-| **Detection Speed** | Instantaneous batch processing ($< 2.5\text{ seconds}$ for 20 images) |
+| **Detection Speed** | Instantaneous batch processing (< 2.5 seconds for 20 images) |
 
 ---
 
@@ -56,45 +56,59 @@ flowchart TD
 ## 📐 Mathematical Formulation & Geometric Invariants
 
 ### 1. Illumination Normalization via CLAHE
-To handle severe cast shadows and ambient sunlight shifts without degrading color chromaticity, the image is transformed to the CIELAB color space:
-$$L^*, a^*, b^* = \mathcal{T}_{\text{BGR} \rightarrow \text{LAB}}(I)$$
-Contrast Limited Adaptive Histogram Equalization (CLAHE) with a clipping limit $\beta = 2.5$ and grid size $8 \times 8$ is applied exclusively to the luminance channel $L^*$:
-$$L^*_{\text{eq}} = \text{CLAHE}(L^*, \text{clipLimit}=2.5, \text{grid}=(8,8))$$
+
+To handle severe cast shadows and ambient sunlight shifts without degrading color chromaticity, the image is transformed to the CIELAB color space. CLAHE (Contrast Limited Adaptive Histogram Equalization) is applied exclusively to the **L* (luminance) channel** with:
+- Clip limit: **2.5**
+- Tile grid size: **8 × 8**
+
 This decouples intensity from color channels, eliminating false color shifts in shadowed ball hemispheres.
 
 ### 2. Dual-Band Hue Wrapping for Red in HSV
-In the cylindrical HSV color space, the hue angle $H \in [0^\circ, 360^\circ)$ wraps around $0^\circ$. For 8-bit OpenCV ($H \in [0, 180]$):
-$$\mathcal{M}_{\text{red}} = \left( (0 \le H \le 12) \lor (158 \le H \le 180) \right) \land (80 \le S \le 255) \land (50 \le V \le 255)$$
-For blue balls, a single continuous hue band is sufficient:
-$$\mathcal{M}_{\text{blue}} = (95 \le H \le 130) \land (80 \le S \le 255) \land (40 \le V \le 255)$$
+
+In the cylindrical HSV color space, the hue angle wraps around 0°. In OpenCV's 8-bit representation (H range: 0–180), pure red appears at **both ends** of the hue scale. Two masks are created and combined:
+
+```
+Red Mask  = (0 <= H <= 12)  OR  (158 <= H <= 180)
+            AND (80 <= S <= 255)
+            AND (50 <= V <= 255)
+
+Blue Mask = (95 <= H <= 130)
+            AND (80 <= S <= 255)
+            AND (40 <= V <= 255)
+```
 
 ### 3. Elliptical Mathematical Morphology
-Ball projections under perspective cameras are ellipsoids or circles. Therefore, elliptical structuring elements $K_{\text{ellipse}}$ are utilized rather than rectangular kernels:
-$$\mathcal{M}_{\text{clean}} = (\mathcal{M} \circ K_5) \bullet K_{15}$$
-- **Opening ($\circ$)** with $5 \times 5$ kernel: Erodes isolated noise specks and background dust.
-- **Closing ($\bullet$)** with $15 \times 15$ kernel: Dilates and bridges holes caused by dark ball panel seams, specular reflections, and localized shadow gradients.
+
+Ball projections under perspective cameras are circular/elliptical, so **elliptical structuring elements** are used:
+
+```
+Cleaned_Mask = (Mask  OPEN  kernel_5x5)  CLOSE  kernel_15x15
+```
+
+- **Opening** (5×5 kernel): Removes isolated noise specks and background dust
+- **Closing** (15×15 kernel): Bridges holes caused by dark ball seams, specular reflections, and shadow gradients
 
 ### 4. Scale-Invariant Geometric Shape Gates
-Every candidate contour $\mathcal{C}$ must satisfy four invariant physical constraints:
 
-1. **Circularity / Isoperimetric Quotient**:
-   $$C = \frac{4 \pi \cdot \text{Area}(\mathcal{C})}{\text{Perimeter}(\mathcal{C})^2} \ge 0.40$$
-   *(Theoretical maximum is $1.0$ for an ideal circle).*
-2. **Minimum Enclosing Circle Fill Ratio**:
-   $$\Phi = \frac{\text{Area}(\mathcal{C})}{\pi R_{\min}^2} \ge 0.40$$
-   *(Rejects elongated or hollow concave shapes).*
-3. **Aspect Ratio Invariance**:
-   $$\left| \frac{w}{h} - 1.0 \right| \le 0.45$$
-   *(Rejects oblong or vertical banners).*
-4. **Resolution-Adaptive Scale Gate**:
-   $$0.0001 \le \frac{\text{Area}(\mathcal{C})}{\text{Area}(\text{Image})} \le 0.70$$
-   *(Enables detection of distant balls in $6\text{MP}$ images while rejecting single-pixel noise).*
+Every candidate contour must pass **four geometric filters**:
 
-### 5. Intersection-over-Union (IoU) & Interior Containment Deduplication
-For overlapping candidate bounding boxes $B_A$ and $B_B$:
-$$\text{IoU}(B_A, B_B) = \frac{\text{Area}(B_A \cap B_B)}{\text{Area}(B_A \cup B_B)}$$
-- If $\text{IoU} \ge 0.30$, the smaller box is suppressed via Greedy NMS.
-- **Containment Suppression**: If $\frac{\text{Area}(B_A \cap B_B)}{\text{Area}(B_B)} > 0.75$, internal logos, text stamps, or patches detected within the ball boundary are pruned.
+| Filter | Formula | Threshold | Purpose |
+|---|---|---|---|
+| **Circularity** | `C = 4 * pi * Area / Perimeter^2` | C >= 0.40 | Rejects non-circular shapes |
+| **Fill Ratio** | `F = Area / (pi * R_min^2)` | F >= 0.40 | Rejects hollow/concave blobs |
+| **Aspect Ratio** | `abs(width/height - 1.0)` | <= 0.45 | Rejects oblong shapes |
+| **Scale Gate** | `Area / Image_Area` | 0.0001 to 0.70 | Handles multi-resolution images |
+
+### 5. Intersection-over-Union (IoU) & Containment Deduplication
+
+Overlapping detections are resolved using Greedy NMS:
+
+```
+IoU(A, B) = Area(A intersect B) / Area(A union B)
+```
+
+- If **IoU >= 0.30** → smaller box is suppressed
+- If **> 75%** of a box lies inside a larger detection → suppressed (catches logo/badge false positives)
 
 ---
 
@@ -104,27 +118,27 @@ The pipeline was evaluated across all 20 benchmark test images:
 
 | Image Name | Resolution | Total Balls | Red (Class 1) | Blue (Class 0) | Key Scene Characteristics |
 |---|---|---|---|---|---|
-| `ball_1.jpg` | $1920 \times 1080$ | 8 | 8 | 0 | Red balls clustered on grass surface |
-| `ball_2.jpg` | $3264 \times 1836$ | 4 | 3 | 1 | Multi-color playground setting |
-| `ball_3.jpg` | $640 \times 480$ | 0 | 0 | 0 | Empty background control image |
-| `ball_4.jpg` | $640 \times 480$ | 1 | 0 | 1 | Single blue soccer ball close-up |
-| `ball_5.jpg` | $640 \times 480$ | 3 | 1 | 2 | Mixed blue and red toys on carpet |
-| `ball_6.jpg` | $640 \times 480$ | 7 | 6 | 1 | Multiple small balls on high-contrast floor |
-| `ball_7.jpg` | $640 \times 480$ | 0 | 0 | 0 | Distractor test (no target balls) |
-| `ball_8.jpg` | $1920 \times 1080$ | 3 | 2 | 1 | Two red balls, one blue ball outdoors |
-| `ball_9.jpg` | $1920 \times 1080$ | 5 | 5 | 0 | Red balls lined up under sunlight |
-| `ball_10.jpg` | $3264 \times 1836$ | 3 | 2 | 1 | Mixed lighting conditions |
-| `ball_11.jpg` | $3264 \times 1836$ | 4 | 2 | 2 | Distinct red and blue balls |
-| `ball_12.jpg` | $640 \times 480$ | 4 | 3 | 1 | Mixed balls on tile floor |
-| `ball_13.jpg` | $3264 \times 1836$ | 2 | 1 | 1 | Close-up pair under indoor incandescent light |
-| `ball_14.jpg` | $640 \times 480$ | 1 | 0 | 1 | Single blue tennis-style ball |
-| `ball_15.jpg` | $640 \times 480$ | 2 | 1 | 1 | One red, one blue side-by-side |
-| `ball_16.jpg` | $640 \times 480$ | 5 | 2 | 3 | Cluttered floor scene |
-| `ball_17.jpg` | $640 \times 480$ | 2 | 1 | 1 | Red and blue balls under partial shadow |
-| `ball_18.jpg` | $3264 \times 1836$ | 7 | 5 | 2 | Distant outdoor sporting scene |
-| `ball_19.jpg` | $3264 \times 1836$ | 13 | 10 | 3 | Dense cluster of balls with partial occlusions |
-| `ball_20.jpg` | $3264 \times 1836$ | 14 | 13 | 1 | Ball collection scene with perspective scale changes |
-| **Total** | — | **88** | **60** | **28** | **High recall across both close-ups & wide scenes** |
+| `ball_1.jpg` | 1920x1080 | 8 | 8 | 0 | Red balls clustered on grass surface |
+| `ball_2.jpg` | 3264x1836 | 4 | 3 | 1 | Multi-color playground setting |
+| `ball_3.jpg` | 640x480 | 0 | 0 | 0 | Empty background control image |
+| `ball_4.jpg` | 640x480 | 1 | 0 | 1 | Single blue soccer ball close-up |
+| `ball_5.jpg` | 640x480 | 3 | 1 | 2 | Mixed blue and red toys on carpet |
+| `ball_6.jpg` | 640x480 | 7 | 6 | 1 | Multiple small balls on high-contrast floor |
+| `ball_7.jpg` | 640x480 | 0 | 0 | 0 | Distractor test (no target balls) |
+| `ball_8.jpg` | 1920x1080 | 3 | 2 | 1 | Two red balls, one blue ball outdoors |
+| `ball_9.jpg` | 1920x1080 | 5 | 5 | 0 | Red balls lined up under sunlight |
+| `ball_10.jpg` | 3264x1836 | 3 | 2 | 1 | Mixed lighting conditions |
+| `ball_11.jpg` | 3264x1836 | 4 | 2 | 2 | Distinct red and blue balls |
+| `ball_12.jpg` | 640x480 | 4 | 3 | 1 | Mixed balls on tile floor |
+| `ball_13.jpg` | 3264x1836 | 2 | 1 | 1 | Close-up pair under indoor incandescent light |
+| `ball_14.jpg` | 640x480 | 1 | 0 | 1 | Single blue tennis-style ball |
+| `ball_15.jpg` | 640x480 | 2 | 1 | 1 | One red, one blue side-by-side |
+| `ball_16.jpg` | 640x480 | 5 | 2 | 3 | Cluttered floor scene |
+| `ball_17.jpg` | 640x480 | 2 | 1 | 1 | Red and blue balls under partial shadow |
+| `ball_18.jpg` | 3264x1836 | 7 | 5 | 2 | Distant outdoor sporting scene |
+| `ball_19.jpg` | 3264x1836 | 13 | 10 | 3 | Dense cluster with partial occlusions |
+| `ball_20.jpg` | 3264x1836 | 14 | 13 | 1 | Ball collection with perspective scale changes |
+| **Total** | — | **88** | **60** | **28** | High recall across close-ups & wide scenes |
 
 ---
 
@@ -132,11 +146,11 @@ The pipeline was evaluated across all 20 benchmark test images:
 
 | # | Challenge | Physical Root Cause | Engineering Solution |
 |---|---|---|---|
-| **1** | **Hue Boundary Discontinuity** | In cylindrical color space, pure red spans both $0^\circ$ and $360^\circ$ ($0$ and $180$ in OpenCV). | Split red thresholding into two separate masks ($0\text{--}12$ and $158\text{--}180$) and merged them via bitwise boolean OR (`cv2.bitwise_or`). |
-| **2** | **Specular Highlights & Shadows** | Direct sunlight causes white glare on top of balls and dark shadowed bottoms, splitting contours into crescent shapes. | Used LAB CLAHE for adaptive local dynamic range adjustment, followed by large elliptical closing ($15 \times 15$) to reconnect split hemispheres. |
-| **3** | **Scale Invariance ($640 \times 480$ vs $3264 \times 1836$)** | Fixed pixel area gates fail when image resolution scales from $0.3\text{ MP}$ to $6\text{ MP}$. | Normalized area thresholds relative to the total image area ($A_{\text{contour}} / A_{\text{image}}$), ensuring robust gating across any sensor resolution. |
-| **4** | **Logo & Internal Pattern False Positives** | Brand logos (e.g. blue badges on red balls) trigger secondary false detections inside primary balls. | Implemented containment deduplication: if $> 75\%$ of a bounding box area is enclosed within an existing larger detection, it is automatically discarded. |
-| **5** | **Non-Spherical Colored Distractors** | Red and blue shirts, cups, or carpets match the color thresholds. | Combined 3 geometric constraints: circularity ($C \ge 0.40$), fill ratio ($\Phi \ge 0.40$), and aspect ratio balance ($|w/h - 1| \le 0.45$). |
+| **1** | **Hue Boundary Discontinuity** | Pure red wraps around both 0° and 360° in HSV (0 and 180 in OpenCV 8-bit). | Split red thresholding into two masks (H: 0–12 and 158–180) and merged via bitwise OR. |
+| **2** | **Specular Highlights & Shadows** | Direct sunlight causes white glare on ball tops and dark shadow bottoms, splitting contours. | Used LAB CLAHE for adaptive brightness normalization + 15×15 elliptical closing to reconnect hemispheres. |
+| **3** | **Scale Invariance (640×480 vs 3264×1836)** | Fixed pixel area thresholds fail as resolution scales from 0.3 MP to 6 MP. | All area thresholds are normalized as a ratio of total image area — resolution-agnostic by design. |
+| **4** | **Logo & Internal Pattern False Positives** | Brand logos (e.g. blue badge on a red ball) trigger inner detections inside the ball boundary. | Containment suppression: if >75% of a box overlaps a larger kept box, it is discarded. |
+| **5** | **Non-Spherical Colored Distractors** | Red/blue shirts, cups, or carpets pass the color threshold. | Combined 3 geometric guards: circularity (>= 0.40), fill ratio (>= 0.40), aspect ratio (|w/h - 1| <= 0.45). |
 
 ---
 
@@ -146,14 +160,18 @@ The detector outputs standardized YOLO format text annotations, making the datas
 
 ### Format Definition
 Each line in `<image_name>.txt` represents one detected object:
-```plaintext
+```
 <class_id> <x_center> <y_center> <width> <height>
 ```
-* Coordinates are strictly normalized to floating-point values in the range $[0.0, 1.0]$.
-* `x_center = (box_x + box_w / 2) / image_width`
-* `y_center = (box_y + box_h / 2) / image_height`
-* `width    = box_w / image_width`
-* `height   = box_h / image_height`
+
+All coordinates are strictly normalized to the range **[0.0, 1.0]**:
+
+```
+x_center = (box_x + box_w / 2) / image_width
+y_center = (box_y + box_h / 2) / image_height
+width    = box_w / image_width
+height   = box_h / image_height
+```
 
 ### Class Mapping
 ```yaml
@@ -191,7 +209,7 @@ classical-cv-ball-detector-yolo/
 
 ### 1. Clone the Repository
 ```bash
-git clone https://github.com/<YOUR_USERNAME>/classical-cv-ball-detector-yolo.git
+git clone https://github.com/Mustafa700aa/Classical-cv-ball-detector-yolo.git
 cd classical-cv-ball-detector-yolo
 ```
 
@@ -227,7 +245,7 @@ Upon execution:
 ## 🖼️ Visual Annotation Outputs
 
 Detected balls are visually rendered with class-specific bounding boxes and labels:
-- 🔵 **Blue Balls**: Labeled with dark-orange/blue bounding boxes.
+- 🔵 **Blue Balls**: Labeled with dark-orange bounding boxes.
 - 🔴 **Red Balls**: Labeled with vivid red bounding boxes.
 
 Open `output/annotated/` to inspect the visual results for all 20 test images.
